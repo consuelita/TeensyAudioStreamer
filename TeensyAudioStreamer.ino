@@ -13,6 +13,7 @@ AudioConnection       patchCord2(playWav, 1, usb, 1);   // Right channel
 #define SDCARD_CS_PIN 10 // IMPORTANT: Your pin is likely to be different
 #define MAX_RETRY_ATTEMPTS 3
 #define MAX_FILES 15
+#define MAX_FILENAME_LEN 64 
 
 // File Management
 File root;
@@ -152,47 +153,55 @@ void scanForWavFiles() {
     return;
   }
 
-  while (true) {
+    while (totalFiles < MAX_FILES) {
     File entry = root.openNextFile();
+    if (!entry) break;
 
-    if (!entry) 
-    { 
-      break; // No more files
-    }
-
-    // Use fixed buffer instead of String
-    char filename[64];
-    strncpy(filename, entry.name(), sizeof(filename) - 1);
-    filename[sizeof(filename) - 1] = '\0';
+    // Get filename
+    const char* name = entry.name();
     
-    // Convert to lowercase for comparison
-    for (int i = 0; filename[i]; i++) 
-    {
-      filename[i] = tolower(filename[i]);
+    // Skip if filename is too long
+    if (strlen(name) >= MAX_FILENAME_LEN) {
+      entry.close();
+      continue;
+    }
+    
+    // Skip hidden/system files (starting with . or _)
+    if (name[0] == '.' || name[0] == '_') {
+      entry.close();
+      continue;
+    }
+    
+    // Skip directories
+    if (entry.isDirectory()) {
+      entry.close();
+      continue;
     }
 
-    // Check if it's a WAV file and not a directory
-    if (!entry.isDirectory() && strstr(filename, ".wav") != NULL) 
-    {
-      if (totalFiles < MAX_FILES) 
-      {
-        // Store original filename (not lowercase)
-        strncpy(fileList[totalFiles], entry.name(), sizeof(fileList[totalFiles]) - 1);
-        fileList[totalFiles][sizeof(fileList[totalFiles]) - 1] = '\0';
-        
-        Serial.print(F("Found: "));
-        Serial.println(fileList[totalFiles]);
-        totalFiles++;
-      } 
-      else 
-      {
-        Serial.print(F("Warning: Maximum file limit ("));
-        Serial.print(MAX_FILES);
-        Serial.println(F(") reached. Some files ignored."));
-        entry.close();
-        break;
+    // Create lowercase copy for extension checking
+    char lowerName[MAX_FILENAME_LEN];
+    strncpy(lowerName, name, MAX_FILENAME_LEN - 1);
+    lowerName[MAX_FILENAME_LEN - 1] = '\0';
+    
+    // Convert to lowercase manually
+    for (int i = 0; lowerName[i]; i++) {
+      if (lowerName[i] >= 'A' && lowerName[i] <= 'Z') {
+        lowerName[i] += 32;
       }
     }
+
+    // Check if it ends with .wav
+    int len = strlen(lowerName);
+    if (len > 4 && strcmp(&lowerName[len-4], ".wav") == 0) {
+      // Store the original filename (not lowercase)
+      strncpy(fileList[totalFiles], name, MAX_FILENAME_LEN - 1);
+      fileList[totalFiles][MAX_FILENAME_LEN - 1] = '\0';
+      
+      Serial.print(F("Found: "));
+      Serial.println(fileList[totalFiles]);
+      totalFiles++;
+    }
+    
     entry.close();
   }
   root.close();
