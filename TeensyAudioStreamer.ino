@@ -3,11 +3,17 @@
 #include <SPI.h>
 #include <SerialFlash.h>
 
-// Audio Library Objects
+// Audio Library Objects with mixer and test tone
 AudioPlaySdWav        playWav;    // WAV file player
+AudioSynthWaveform    testTone;   // Test tone generator
+AudioMixer4           mixer;      // Audio mixer
 AudioOutputUSB        usb;        // USB audio output
-AudioConnection       patchCord1(playWav, 0, usb, 0);   // Left channel
-AudioConnection       patchCord2(playWav, 1, usb, 1);   // Right channel
+AudioControlSGTL5000  audioShield; // Audio shield control (needed even for USB)
+AudioConnection       patchCord1(playWav, 0, mixer, 0);     // WAV left to mixer channel 0
+AudioConnection       patchCord2(playWav, 1, mixer, 1);     // WAV right to mixer channel 1
+AudioConnection       patchCord3(testTone, 0, mixer, 2);    // Test tone to mixer channel 2
+AudioConnection       patchCord4(mixer, 0, usb, 0);         // Mixer output to USB left
+AudioConnection       patchCord5(mixer, 0, usb, 1);         // Mixer output to USB right
 
 // SD Card
 #define SDCARD_CS_PIN 10 // IMPORTANT: Your pin is likely to be different
@@ -30,34 +36,40 @@ const unsigned long STATUS_INTERVAL = 5000; // Print the status every 5 seconds
 int consecutiveFailures = 0;
 const int MAX_CONSECUTIVE_FAILURES = 5;
 
-// Debug counters
-unsigned long loopCount = 0;
-unsigned long statusCallCount = 0;
+// Test tone control
+bool testToneActive = false;
 
 void setup() 
 {
   Serial.begin(115200);
   delay(1000);
 
-  // Add memory info at startup
   Serial.println(F("=== TEENSY WAV PLAYER STARTUP ==="));
-  Serial.print(F("Free RAM at startup: "));
-  printFreeMemory();
-  Serial.println();
-
   Serial.println(F("Teensy USB Audio WAV Player"));
   Serial.println(F("==========================="));
 
-  // Initialize the audio system - reduced memory to prevent corruption
+  // Initialize the audio system
   Serial.print(F("Allocating AudioMemory(25)..."));
   AudioMemory(25); 
   Serial.println(F(" done"));
   
-  Serial.print(F("Free RAM after AudioMemory: "));
-  printFreeMemory();
-  Serial.println();
+  // Enable audio shield (required even for USB audio)
+  Serial.print(F("Enabling audio shield..."));
+  audioShield.enable();
+  audioShield.volume(0.5);
+  Serial.println(F(" done"));
+  
+  // Set up mixer gains
+  Serial.print(F("Setting up mixer..."));
+  mixer.gain(0, 0.7); // WAV left channel
+  mixer.gain(1, 0.7); // WAV right channel  
+  mixer.gain(2, 0.0); // Test tone (start OFF)
+  mixer.gain(3, 0.0); // Unused channel
+  Serial.println(F(" done"));
+  
+  // Configure test tone
+  testTone.begin(0.5, 1000, WAVEFORM_SINE); // 50% amplitude, 1kHz sine wave
 
-  // Initialize the SD card with retry mechanism
   Serial.print(F("Initializing the SD card..."));
   
   bool sdInitialized = false;
@@ -110,16 +122,8 @@ void setup()
     }
   }
 
-  Serial.print(F("Free RAM before file scan: "));
-  printFreeMemory();
-  Serial.println();
-
   // Scan for WAV files
   scanForWavFiles();
-
-  Serial.print(F("Free RAM after file scan: "));
-  printFreeMemory();
-  Serial.println();
 
   if (totalFiles == 0) 
   {
@@ -137,9 +141,6 @@ void setup()
   }
 
   Serial.println(F("Setup complete - starting playback"));
-  Serial.print(F("Free RAM before first playback: "));
-  printFreeMemory();
-  Serial.println();
 
   // Start playing the first file
   playNextFile();
@@ -173,25 +174,12 @@ void loop()
   delay(50);
 }
 
-// Function to estimate free RAM (simple version for Teensy)
-void printFreeMemory() 
-{
-  // Simple approximation - just show that we're checking memory
-  Serial.print(F("~"));
-  Serial.print(millis()); // Use millis as a changing value to show function is called
-  Serial.print(F(" (mem check)"));
-}
-
 void scanForWavFiles() 
 {
   Serial.println(F("=== SCANNING FOR WAV FILES ==="));
   
   // Reset file count
   totalFiles = 0;
-  
-  Serial.print(F("Free RAM at scan start: "));
-  printFreeMemory();
-  Serial.println();
   
   // Try to open root directory
   root = SD.open("/");
@@ -268,10 +256,7 @@ void scanForWavFiles()
       totalFiles++;
       
       Serial.print(F("Current file count: "));
-      Serial.print(totalFiles);
-      Serial.print(F(", Free RAM: "));
-      printFreeMemory();
-      Serial.println();
+      Serial.println(totalFiles);
     } 
     else 
     {
@@ -383,9 +368,6 @@ void playNextFile()
     }
   }
   
-  Serial.print(F("Free RAM after playback attempt: "));
-  printFreeMemory();
-  Serial.println();
   Serial.println(F("=== END PLAY NEXT FILE ==="));
 }
 
@@ -437,7 +419,7 @@ void printStatus()
     Serial.println(consecutiveFailures);
   }
   
-  Serial.println(F("Commands: n=next, s=stop, p=play, ?=help"));
+  Serial.println(F("Commands: n=next, s=stop, p=play, t=test tone, ?=help"));
   Serial.println(F("=========================================="));
 }
 
@@ -489,6 +471,23 @@ void handleSerialCommand()
       printHelp();
       break;
       
+    case 't':
+    case 'T':
+      Serial.print(F("Command: Test tone "));
+      if (testToneActive) 
+      {
+        Serial.println(F("OFF"));
+        mixer.gain(2, 0.0); // Turn off test tone
+        testToneActive = false;
+      } 
+      else 
+      {
+        Serial.println(F("ON - 1kHz sine wave"));
+        mixer.gain(2, 0.8); // Turn on test tone at 80% volume
+        testToneActive = true;
+      }
+      break;
+      
     case 'f':
     case 'F':
       Serial.println(F("Command: Rescan files"));
@@ -516,6 +515,7 @@ void printHelp()
   Serial.println(F("  r/R - Restart current track"));  
   Serial.println(F("  s/S - Stop playback"));
   Serial.println(F("  p/P - Play/Resume"));
+  Serial.println(F("  t/T - Toggle test tone"));
   Serial.println(F("  f/F - Rescan for files"));
   Serial.println(F("  ?/h/H - Show this help"));
   Serial.println();
